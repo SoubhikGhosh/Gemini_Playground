@@ -38,7 +38,7 @@ def setup_logging():
 
 setup_logging()
 
-genai.configure(api_key="YOUR_API_KEY")
+genai.configure(api_key="AIzaSyD2ArK74wBtL1ufYmpyrV2LqaOBrSi3mlU")
 
 @dataclass
 class TransactionSession:
