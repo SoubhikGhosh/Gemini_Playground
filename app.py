@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify, session
 from flask_cors import CORS
-from functools import wraps
 import google.generativeai as genai
 import json
 import logging
@@ -8,7 +7,7 @@ import os
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import uuid
 
 # Initialize Flask app
@@ -39,7 +38,7 @@ def setup_logging():
 
 setup_logging()
 
-genai.configure(api_key="AIzaSyD2ArK74wBtL1ufYmpyrV2LqaOBrSi3mlU")
+genai.configure(api_key="YOUR_API_KEY")
 
 @dataclass
 class TransactionSession:
@@ -69,118 +68,58 @@ def get_gemini_response(model, prompt):
         return '{}'
 
 def get_transaction_details(model, prompt, conversation_history):
-    system_prompt = """You are a friendly and helpful banking assistant. Your role is to help customers make secure money transfers while intelligently extracting and validating transaction details.
+    system_prompt = """You are a precise and accurate banking assistant. Your role is to carefully extract and validate transaction details from user messages.
 
-CORE TASK: Extract transaction details from user messages and maintain natural conversation.
+    IMPORTANT EXTRACTION RULES:
+    1. For amounts:
+       - Look for numbers preceded by Rs, ₹, rupees, or just numbers in context of money
+       - Extract only the numeric value
+       - Example: "transfer 100 rupees" → amount should be "100"
+       
+    2. For account numbers:
+       - Look for numeric sequences near words like "account", "acc", "no", "number"
+       - Extract only the numeric value
+       - Example: "acc no 989898" → beneficiary_account should be "989898"
+       
+    3. For IFSC codes:
+       - Look for alphanumeric codes near "ifsc"
+       - Maintain original case
+       - Example: "ifsc jhjh76" → beneficiary_ifsc should be "JHJH76"
+       
+    4. For names:
+       - Look for names after words like "to", "for", "name"
+       - Properly capitalize names
+       - Example: "to naveen" → beneficiary_name should be "Naveen"
 
-TRANSACTION DETAIL EXTRACTION RULES:
-1. Amount: 
-   - Look for numbers followed by or preceded by currency indicators (rs, rupees, ₹, inr)
-   - Must be a numeric value only
-   - Example: "100 rupees" → "100"
-
-2. Beneficiary Name:
-   - Usually follows words like "to", "for", "send to"
-   - Take full name if available
-   - Example: "to John Doe" → "John Doe"
-
-3. Account Number:
-   - Look for numeric sequences near words like "account", "acc", "no", "number"
-   - Must be numbers only
-   - Example: "acc no 123456789" → "123456789"
-
-4. IFSC Code:
-   - Usually follows "ifsc", "ifsc code"
-   - Keep original case
-   - Example: "ifsc HDFC0001234" → "HDFC0001234"
-
-5. Remarks (Optional):
-   - Look for content after "remarks", "note", "message"
-   - Example: "remarks: birthday gift" → "birthday gift"
-
-RESPONSE FORMAT:
-1. First, extract information into a valid JSON object:
-{
-    "beneficiary_name": string or null,
-    "beneficiary_account": string or null,
-    "beneficiary_ifsc": string or null,
-    "amount": string or null,
-    "remarks": string or null
-}
-
-2. Then, provide a natural conversational response:
-- Acknowledge the information provided
-- Request any missing required information
-- If all required info is present, provide a clear summary
-- Include a relevant security tip
-
-CONVERSATION STYLE:
-- Be warm and professional
-- Acknowledge each piece of information received
-- Ask for missing information naturally
-- Provide gentle corrections if information seems incorrect
-- End with security reminders for financial safety
-
-Example user input: "send 1000 rs to John account 123456"
-Example response:
-{
-    "beneficiary_name": "John",
-    "beneficiary_account": "123456",
-    "beneficiary_ifsc": null,
-    "amount": "1000",
-    "remarks": null
-}
-
-I see you want to send Rs. 1000 to John's account 123456. I just need the IFSC code of John's bank to proceed. Could you please provide that?
-
-Remember: Always verify the account details carefully before proceeding with any transfer."""
-
-    full_prompt = system_prompt + "\n\nConversation history:\n" + conversation_history + "\n\nCurrent user message:\n" + prompt
+    Extract these fields from the user message:
+    1. Beneficiary name
+    2. Beneficiary account number
+    3. Beneficiary IFSC code
+    4. Amount
+    5. Remarks (optional)
     
-    try:
-        response = get_gemini_response(model, full_prompt)
-        # Extract JSON part
-        json_str = response[response.find('{'):response.find('}')+1]
-        transaction_info = json.loads(json_str)
-        
-        # Get the conversational part (everything after the JSON)
-        conversation_response = response[response.find('}')+1:].strip()
-        
-        return transaction_info, conversation_response
-    except Exception as e:
-        app.logger.error(f"Error processing transaction details: {str(e)}")
-        return {
-            "beneficiary_name": None,
-            "beneficiary_account": None,
-            "beneficiary_ifsc": None,
-            "amount": None,
-            "remarks": None
-        }, "I apologize, but I'm having trouble understanding those details. Could you please provide the information again, clearly stating the amount, recipient's name, account number, and IFSC code?"
-
-def fallback_extraction(prompt):
-    transaction_info = {
-        "beneficiary_name": None,
-        "beneficiary_account": None,
-        "beneficiary_ifsc": None,
-        "amount": None,
-        "remarks": None
+    Return ONLY a valid JSON object with these fields: 
+    {
+        "beneficiary_name": null or string,
+        "beneficiary_account": null or string,
+        "beneficiary_ifsc": null or string,
+        "amount": null or string,
+        "remarks": null or string
     }
     
-    words = prompt.lower().split()
+    If a field is not found in the user message, keep it as null.
+    Be precise and accurate in extraction. Do not guess or approximate values."""
     
-    if "to" in words:
-        idx = words.index("to")
-        if idx+1 < len(words):
-            transaction_info["beneficiary_name"] = words[idx+1].capitalize()
+    full_prompt = system_prompt + "\n\nConversation so far:\n" + conversation_history + "\n\nCurrent user message:\n" + prompt
     
-    if "rs" in words or "rupees" in words or "₹" in words:
-        for i, word in enumerate(words):
-            if word in ["rs", "rupees", "₹"] and i+1 < len(words):
-                try:
-                    transaction_info["amount"] = words[i+1]
-                except:
-                    pass
-    
+    response = get_gemini_response(model, full_prompt)
+    json_str = response.strip()
+    if json_str.startswith("```json"):
+        json_str = json_str[7:]
+    if json_str.endswith("```"):
+        json_str = json_str[:-3]
+        
+    transaction_info = json.loads(json_str.strip())
     return transaction_info
 
 def format_confirmation(transaction_info):
@@ -201,8 +140,11 @@ def format_confirmation(transaction_info):
             else:
                 confirmation += f"- {friendly_fields[field]}: {value}\n"
     
-    confirmation += "\nIs this information correct? Please say 'complete' to proceed with the transaction or let me know what needs to be changed.\n"
-    confirmation += "\nRemember: Never share your account passwords or OTPs with anyone, including bank officials."
+    confirmation += "\nWhat would you like to do?\n"
+    confirmation += "1. Say 'confirm' to proceed with the transaction\n"
+    confirmation += "2. Say 'change [field]' to modify any detail (e.g., 'change amount' or 'change name')\n"
+    confirmation += "3. Say 'cancel' to cancel the transaction\n\n"
+    confirmation += "Remember: Always verify all details carefully before confirming."
     
     return confirmation
 
@@ -210,17 +152,17 @@ def format_confirmation(transaction_info):
 def start_transaction():
     try:
         session_id = str(uuid.uuid4())
-        welcome_message = """Hello! I'm your secure banking assistant. I'll help you make a safe money transfer today.
+        welcome_message = """Hello! I'm your secure banking assistant. I'll help you make a money transfer today.
 
-To process your transfer, I'll need the following details:
+To process your transfer, I'll need:
 1. Recipient's name
 2. Recipient's account number
 3. Bank IFSC code
 4. Amount to transfer
 
-You can provide these details in any order. How may I assist you today?
+You can provide these details all at once or one by one. How may I help you today?
 
-Remember: Always verify the recipient's details before confirming any transfer."""
+Remember: Always verify recipient details before confirming any transfer."""
 
         transaction_session = TransactionSession(
             session_id=session_id,
@@ -260,7 +202,7 @@ Remember: Always verify the recipient's details before confirming any transfer."
 def process_transaction():
     try:
         data = request.get_json()
-        user_input = data.get('message')
+        user_input = data.get('message', '').strip()
         session_id = data.get('session_id')
         
         if not user_input:
@@ -275,20 +217,26 @@ def process_transaction():
         
         transaction_data['conversation_history'] += f"User: {user_input}\n"
         
-        if user_input.lower() in ["exit", "quit", "cancel", "stop"]:
+        user_input_lower = user_input.lower()
+        
+        # Handle cancellation
+        if user_input_lower in ["exit", "quit", "cancel", "stop"]:
             session.pop('transaction', None)
             return jsonify({
                 'message': 'Transaction cancelled. Stay safe and have a great day!',
                 'transaction_info': transaction_data['transaction_info']
             })
         
-        if user_input.lower() == "complete":
+        # Handle confirmation
+        if user_input_lower == "confirm":
             missing_fields = [field for field, value in transaction_data['transaction_info'].items() 
                             if not value and field != 'remarks']
             if missing_fields:
                 return jsonify({
                     'error': 'Incomplete transaction',
-                    'missing_fields': missing_fields
+                    'missing_fields': missing_fields,
+                    'next_prompt': "Please provide the following missing information: " + 
+                                 ", ".join(missing_fields)
                 }), 400
             else:
                 session.pop('transaction', None)
@@ -297,9 +245,29 @@ def process_transaction():
                     'transaction_details': transaction_data['transaction_info']
                 })
         
-        model = get_gemini_model()
-        updated_info, conversation_response = get_transaction_details(model, user_input, transaction_data['conversation_history'])
+        # Handle field changes
+        if user_input_lower.startswith("change "):
+            field = user_input_lower[7:].strip()  # Remove "change " prefix
+            field_mappings = {
+                "name": "beneficiary_name",
+                "account": "beneficiary_account",
+                "ifsc": "beneficiary_ifsc",
+                "amount": "amount",
+                "remarks": "remarks"
+            }
+            
+            if field in field_mappings:
+                transaction_data['transaction_info'][field_mappings[field]] = None
+                return jsonify({
+                    'transaction_info': transaction_data['transaction_info'],
+                    'next_prompt': f"Please provide the new {field}:"
+                })
         
+        # Process normal input
+        model = get_gemini_model()
+        updated_info = get_transaction_details(model, user_input, transaction_data['conversation_history'])
+        
+        # Update transaction info with new values
         for key, value in updated_info.items():
             if value:
                 transaction_data['transaction_info'][key] = value
@@ -307,9 +275,20 @@ def process_transaction():
         transaction_data['last_updated'] = datetime.utcnow().isoformat()
         session['transaction'] = transaction_data
         
+        # Check if all required fields are filled
+        missing_fields = [field for field, value in transaction_data['transaction_info'].items() 
+                         if not value and field != 'remarks']
+        
+        if not missing_fields:
+            next_prompt = format_confirmation(transaction_data['transaction_info'])
+        else:
+            next_prompt = get_gemini_response(model, 
+                "Based on this transaction info: " + json.dumps(transaction_data['transaction_info']) +
+                "\nPolitely ask the user for the missing required information. Be specific about what's needed.")
+        
         response = {
             'transaction_info': transaction_data['transaction_info'],
-            'next_prompt': conversation_response
+            'next_prompt': next_prompt
         }
         
         app.logger.info(f"Processed transaction message for session {session_id}")
@@ -317,41 +296,6 @@ def process_transaction():
     
     except Exception as e:
         app.logger.error(f"Error processing transaction: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/api/transaction/complete', methods=['POST'])
-def complete_transaction():
-    try:
-        data = request.get_json()
-        session_id = data.get('session_id')
-        
-        if not session_id:
-            return jsonify({'error': 'Session ID is required'}), 400
-        
-        transaction_data = session.get('transaction')
-        if not transaction_data or transaction_data['session_id'] != session_id:
-            return jsonify({'error': 'No active transaction session'}), 404
-        
-        missing_fields = [field for field, value in transaction_data['transaction_info'].items() 
-                         if not value and field != 'remarks']
-        
-        if missing_fields:
-            return jsonify({
-                'error': 'Incomplete transaction',
-                'missing_fields': missing_fields
-            }), 400
-        
-        session.pop('transaction', None)
-        
-        app.logger.info(f"Completed transaction for session {session_id}")
-        
-        return jsonify({
-            'message': 'Transaction completed successfully. Thank you for using our service. Remember to always verify recipient details and never share your OTPs!',
-            'transaction_details': transaction_data['transaction_info']
-        })
-    
-    except Exception as e:
-        app.logger.error(f"Error completing transaction: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/health', methods=['GET'])
