@@ -47,8 +47,8 @@ def setup_logging():
 setup_logging()
 
 # Configure Gemini AI
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-genai.configure(api_key=GEMINI_API_KEY)
+# GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+genai.configure(api_key="AIzaSyD2ArK74wBtL1ufYmpyrV2LqaOBrSi3mlU")
 
 @dataclass
 class TransactionSession:
