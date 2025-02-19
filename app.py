@@ -69,50 +69,93 @@ def get_gemini_response(model, prompt):
         return '{}'
 
 def get_transaction_details(model, prompt, conversation_history):
-    system_prompt = """You are a friendly and helpful banking assistant. Your role is to help customers make secure money transfers.
+    system_prompt = """You are a friendly and helpful banking assistant. Your role is to help customers make secure money transfers while intelligently extracting and validating transaction details.
 
-    First, greet the user warmly. Then, guide them through providing the following required information:
-    1. Beneficiary name
-    2. Beneficiary account number
-    3. Beneficiary IFSC code
-    4. Amount to transfer
+CORE TASK: Extract transaction details from user messages and maintain natural conversation.
 
-    Important behaviors:
-    - If any information is missing, politely ask for it
-    - If information is provided, acknowledge it and ask for the next piece of information
-    - Keep track of what's been provided and what's still needed
-    - When all information is complete, provide a summary and ask for confirmation
-    - End your responses with a relevant safety tip about secure banking
-    
-    Extract the following financial transaction information from the user message:
-    1. Beneficiary name
-    2. Beneficiary account number
-    3. Beneficiary IFSC code
-    4. Amount
-    5. Remarks (optional)
-    
-    Return a valid JSON object with these fields: 
-    {"beneficiary_name": null or string, "beneficiary_account": null or string, 
-    "beneficiary_ifsc": null or string, "amount": null or string, "remarks": null or string}
-    
-    If a field is not found in the user message, keep it as null.
-    
-    After the JSON, provide a natural conversational response asking for missing information or confirming details."""
-    
-    full_prompt = system_prompt + "\n\nConversation so far:\n" + conversation_history + "\n\nCurrent user message:\n" + prompt
+TRANSACTION DETAIL EXTRACTION RULES:
+1. Amount: 
+   - Look for numbers followed by or preceded by currency indicators (rs, rupees, ₹, inr)
+   - Must be a numeric value only
+   - Example: "100 rupees" → "100"
+
+2. Beneficiary Name:
+   - Usually follows words like "to", "for", "send to"
+   - Take full name if available
+   - Example: "to John Doe" → "John Doe"
+
+3. Account Number:
+   - Look for numeric sequences near words like "account", "acc", "no", "number"
+   - Must be numbers only
+   - Example: "acc no 123456789" → "123456789"
+
+4. IFSC Code:
+   - Usually follows "ifsc", "ifsc code"
+   - Keep original case
+   - Example: "ifsc HDFC0001234" → "HDFC0001234"
+
+5. Remarks (Optional):
+   - Look for content after "remarks", "note", "message"
+   - Example: "remarks: birthday gift" → "birthday gift"
+
+RESPONSE FORMAT:
+1. First, extract information into a valid JSON object:
+{
+    "beneficiary_name": string or null,
+    "beneficiary_account": string or null,
+    "beneficiary_ifsc": string or null,
+    "amount": string or null,
+    "remarks": string or null
+}
+
+2. Then, provide a natural conversational response:
+- Acknowledge the information provided
+- Request any missing required information
+- If all required info is present, provide a clear summary
+- Include a relevant security tip
+
+CONVERSATION STYLE:
+- Be warm and professional
+- Acknowledge each piece of information received
+- Ask for missing information naturally
+- Provide gentle corrections if information seems incorrect
+- End with security reminders for financial safety
+
+Example user input: "send 1000 rs to John account 123456"
+Example response:
+{
+    "beneficiary_name": "John",
+    "beneficiary_account": "123456",
+    "beneficiary_ifsc": null,
+    "amount": "1000",
+    "remarks": null
+}
+
+I see you want to send Rs. 1000 to John's account 123456. I just need the IFSC code of John's bank to proceed. Could you please provide that?
+
+Remember: Always verify the account details carefully before proceeding with any transfer."""
+
+    full_prompt = system_prompt + "\n\nConversation history:\n" + conversation_history + "\n\nCurrent user message:\n" + prompt
     
     try:
-        json_response = get_gemini_response(model, full_prompt)
-        json_str = json_response.strip()
-        if json_str.startswith("```json"):
-            json_str = json_str[7:]
-        if json_str.endswith("```"):
-            json_str = json_str[:-3]
-            
-        transaction_info = json.loads(json_str.strip())
-        return transaction_info
-    except:
-        return fallback_extraction(prompt)
+        response = get_gemini_response(model, full_prompt)
+        # Extract JSON part
+        json_str = response[response.find('{'):response.find('}')+1]
+        transaction_info = json.loads(json_str)
+        
+        # Get the conversational part (everything after the JSON)
+        conversation_response = response[response.find('}')+1:].strip()
+        
+        return transaction_info, conversation_response
+    except Exception as e:
+        app.logger.error(f"Error processing transaction details: {str(e)}")
+        return {
+            "beneficiary_name": None,
+            "beneficiary_account": None,
+            "beneficiary_ifsc": None,
+            "amount": None,
+            "remarks": None
+        }, "I apologize, but I'm having trouble understanding those details. Could you please provide the information again, clearly stating the amount, recipient's name, account number, and IFSC code?"
 
 def fallback_extraction(prompt):
     transaction_info = {
@@ -255,7 +298,7 @@ def process_transaction():
                 })
         
         model = get_gemini_model()
-        updated_info = get_transaction_details(model, user_input, transaction_data['conversation_history'])
+        updated_info, conversation_response = get_transaction_details(model, user_input, transaction_data['conversation_history'])
         
         for key, value in updated_info.items():
             if value:
@@ -264,15 +307,9 @@ def process_transaction():
         transaction_data['last_updated'] = datetime.utcnow().isoformat()
         session['transaction'] = transaction_data
         
-        # Let Gemini handle the next prompt based on missing information
-        next_prompt = get_gemini_response(model, 
-            transaction_data['conversation_history'] + 
-            "\nCurrent transaction info: " + json.dumps(transaction_data['transaction_info']) +
-            "\nProvide a natural response based on what information is still needed or confirm all details are complete.")
-        
         response = {
             'transaction_info': transaction_data['transaction_info'],
-            'next_prompt': next_prompt
+            'next_prompt': conversation_response
         }
         
         app.logger.info(f"Processed transaction message for session {session_id}")
